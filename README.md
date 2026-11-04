@@ -33,7 +33,7 @@ Browser ──POST /api/quest──▶ Next.js route handler
 | SF 311 types, normalizer, SODA fetcher | `src/lib/sf311/` |
 | Mistral client, tool defs, prompts, shared tool loop (`loop.ts`), quest + challenge + dev agents | `src/lib/mistral/` |
 | Quest schema (zod) + fixture | `src/lib/quest/` |
-| Closed-loop map challenges (schema, resolve, store, service) — WIP, no routes/UI yet | `src/lib/challenge/`, `src/lib/osm/`, `src/lib/elastic/challenges.ts` |
+| Closed-loop map challenges (schema, rule-based + agent generation, resolve, store, service, routes) | `src/lib/challenge/`, `src/lib/osm/`, `src/lib/elastic/challenges.ts`, `src/app/api/challenges/` |
 | Dev agent (chat with the data) | `src/lib/elastic/dev-client.ts`, `src/lib/mistral/dev-*.ts`, `src/app/api/dev/chat`, `src/components/dev/` |
 | API routes | `src/app/api/{quest,issues,health}/route.ts` |
 | UI | `src/app/page.tsx`, `src/components/` |
@@ -103,13 +103,26 @@ Returns `{ quest, trace, model }` — see `QuestSchema` in `src/lib/quest/schema
 
 Raw Elasticsearch lookup: nearby cases, duplicate clusters, and category aggregations. Handy for a map view or for debugging the index.
 
+### Challenges (closed loop)
+
+| Endpoint | What |
+| --- | --- |
+| `POST /api/challenges` | `{ lat, lon, radius_m?, mode?: "rules" \| "agent" }`. **`rules` (default)** is instant and LLM-free: real 311 cases near you become yes/no `confirm_issue` challenges: *Is it real?* (open, under 2 days old, 10 xp), *Still there?* (open, over 7 days old, 15 xp), *Really fixed?* (closed as resolved in the last 3 days, 20 xp). Only physical, fixed-in-place categories (`QUEST_CATEGORIES` in `src/lib/challenge/rules.ts`); cases with an open challenge are skipped. `agent` runs the Mistral challenge agent (311 + OSM + prior observations). |
+| `GET /api/challenges?lat=&lon=&radius_m=&status=` | Challenges near a point |
+| `GET /api/challenges/:id` | Challenge + its observations |
+| `POST /api/challenges/:id/observations` | `{ answer: { yes_no }, location: { lat, lon }, note?, photo_url?, player? }`. `location` is required and must be within 150 m (or the challenge radius). Resolves the challenge (`issue_persists` / `issue_resolved`). |
+
 ### `GET /api/health`
 
 Env + Elasticsearch connectivity + doc count.
 
 ## Data
 
-[SF 311 Cases](https://data.sfgov.org/City-Infrastructure/311-Cases/vw6y-z8j6) via the Socrata SODA API (`vw6y-z8j6`). The seeder pulls `requested_datetime`, `status_description`, `service_name`/`service_subtype`/`service_details`, address fields, and `lat`/`long`, normalizing them into the `SF311Case` shape in `src/lib/sf311/types.ts`. An optional `SF_OPEN_DATA_APP_TOKEN` raises rate limits.
+[SF 311 Cases](https://data.sf.gov/City-Infrastructure/311-Cases/vw6y-z8j6) via the Socrata SODA API (`vw6y-z8j6`, refreshed nightly). The seeder pages newest-first with a keyset cursor (no growing `$offset`) and converts SODA's zone-less timestamps from SF local time to UTC. The seeder pulls `requested_datetime`, `status_description`, `service_name`/`service_subtype`/`service_details`, address fields, and `lat`/`long`, normalizing them into the `SF311Case` shape in `src/lib/sf311/types.ts`. An optional `SF_OPEN_DATA_APP_TOKEN` raises rate limits.
+
+**Semantic search (optional):** set `ELASTICSEARCH_INFERENCE_ID=.elser-2-elastic` (Elastic's hosted ELSER) before `es:setup -- --recreate` and seeding. `description` is then copied into a `semantic_text` field, and `search_issues` / `/api/issues?q=` combine keyword and ELSER matches. Leave it unset for plain keyword search (faster to seed).
+
+**Elastic Serverless:** index creation skips shard/replica settings automatically (serverless rejects them).
 
 ## Extending
 
@@ -128,15 +141,3 @@ Env + Elasticsearch connectivity + doc count.
 | `npm run es:setup [-- --recreate]` | Create the index |
 | `npm run es:seed [-- --days N --limit N --lat --lon --radius]` | Load real 311 data |
 | `npm run es:seed:sample` | Load bundled synthetic sample |
-
-## Python prototype (to be ported into Next.js)
-
-An earlier Python pass lives in `scripts/ingest_311.py` and `backend/` (FastAPI + LangChain on Mistral). It is kept for reference while its pieces are ported here; see the comparison notes in the PR.
-
-- `scripts/ingest_311.py` already loaded the last 90 days (~227k cases) into the Elastic Serverless project as index **`sf_311`**, with raw SODA field names, SF-timezone dates, keyset pagination, and an **ELSER** `semantic_text` field (`search_semantic`, endpoint `.elser-2-elastic`) for sparse semantic search.
-- `backend/engine.py` has rule-based quests (`verify` open <2d, `still_there` open >7d, `was_fixed` closed as resolved <3d), a 150 m proximity check on observations, and a safe-category allowlist.
-
-```bash
-uv run scripts/ingest_311.py --days 90
-uv run uvicorn backend.app:app --port 8311
-```

@@ -1,6 +1,6 @@
 import type { MappingTypeMapping, QueryDslQueryContainer } from "@elastic/elasticsearch/lib/api/types";
 import { getElasticClient } from "./client";
-import { CASE_SETTINGS } from "./index";
+import { indexSettings } from "./index";
 import { getEnv } from "@/lib/env";
 import type { ChallengeStore, NearQuery } from "@/lib/challenge/store";
 import type { Challenge, Observation } from "@/lib/challenge/schema";
@@ -92,7 +92,7 @@ export async function ensureChallengeIndices(opts: { recreate?: boolean } = {}):
   ] as const) {
     const exists = await es.indices.exists({ index });
     if (exists && opts.recreate) await es.indices.delete({ index });
-    if (!exists || opts.recreate) await es.indices.create({ index, settings: CASE_SETTINGS, mappings });
+    if (!exists || opts.recreate) await es.indices.create({ index, settings: await indexSettings(es), mappings });
   }
 }
 

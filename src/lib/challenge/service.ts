@@ -12,6 +12,11 @@ import {
   type ObservationResponse,
 } from "./schema";
 import { getChallengeStore, type NearQuery } from "./store";
+import { buildRuleChallenges } from "./rules";
+import { haversineM } from "@/lib/osm/overpass";
+
+/** Players must be at least this close to the challenge spot (or within its radius_m, if larger). */
+const MAX_DISTANCE_M = 150;
 
 export class ChallengeError extends Error {
   constructor(
@@ -57,6 +62,13 @@ export async function createChallengeBatch(req: ChallengeRequest): Promise<Chall
     return { batch_id: batchId, neighborhood: FIXTURE_BATCH.neighborhood, briefing: FIXTURE_BATCH.briefing, challenges, trace: FIXTURE_TRACE, model: "fixture", mock: true };
   }
 
+  if (req.mode === "rules") {
+    const batch = await buildRuleChallenges(req);
+    const challenges = materializeBatch(batch, batchId, "rules");
+    await store.saveChallenges(challenges);
+    return { batch_id: batchId, neighborhood: batch.neighborhood, briefing: batch.briefing, challenges, trace: [], model: "rules" };
+  }
+
   const { runChallengeAgent } = await import("@/lib/mistral/challenge-agent");
   const { batch, trace, model } = await runChallengeAgent(req);
   const challenges = materializeBatch(batch, batchId, model);
@@ -92,6 +104,13 @@ export async function submitObservation(challengeId: string, input: ObservationI
   const challenge = await store.getChallenge(challengeId);
   if (!challenge) throw new ChallengeError("Challenge not found", 404);
   if (challenge.status === "expired" || isExpired(challenge)) throw new ChallengeError("Challenge has expired", 410);
+
+  if (!getEnv().QUEST_MOCK) {
+    if (!input.location) throw new ChallengeError("location is required: share where you are", 400);
+    const d = haversineM(input.location, challenge.location);
+    const max = Math.max(MAX_DISTANCE_M, challenge.radius_m);
+    if (d > max) throw new ChallengeError(`You are ${Math.round(d)} m away; get within ${max} m`, 403);
+  }
 
   const problem = validateAnswer(challenge, input.answer);
   if (problem) throw new ChallengeError(problem, 400);

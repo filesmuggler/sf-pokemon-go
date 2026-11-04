@@ -5,6 +5,16 @@ import type {
 } from "@elastic/elasticsearch/lib/api/types";
 import { getElasticClient, getIndexName } from "./client";
 import type { CaseStatus, SF311Case } from "@/lib/sf311/types";
+import { getEnv } from "@/lib/env";
+
+/** Keyword match, plus ELSER semantic match when an inference endpoint is configured. */
+function textQuery(query: string): QueryDslQueryContainer {
+  const keyword: QueryDslQueryContainer = {
+    multi_match: { query, fields: ["description^2", "details", "status_notes"] },
+  };
+  if (!getEnv().ELASTICSEARCH_INFERENCE_ID) return keyword;
+  return { bool: { should: [keyword, { semantic: { field: "description_semantic", query } }] } };
+}
 
 export interface GeoCenter {
   lat: number;
@@ -60,9 +70,7 @@ export async function searchNearbyCases(q: NearbyQuery): Promise<{ total: number
     query: {
       bool: {
         filter: baseFilters(q),
-        must: q.query
-          ? [{ multi_match: { query: q.query, fields: ["description^2", "details", "status_notes"] } }]
-          : undefined,
+        must: q.query ? [textQuery(q.query)] : undefined,
       },
     },
     sort: q.query

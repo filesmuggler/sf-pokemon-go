@@ -1,9 +1,10 @@
 import { getEnv } from "@/lib/env";
-import { normalizeSodaRow } from "./normalize";
+import { normalizeSodaRow, sfWallClock } from "./normalize";
 import type { SF311Case, SodaRow } from "./types";
 
 export const SF311_DATASET_ID = "vw6y-z8j6";
-const SODA_BASE = `https://data.sfgov.org/resource/${SF311_DATASET_ID}.json`;
+// data.sfgov.org now 301-redirects here.
+const SODA_BASE = `https://data.sf.gov/resource/${SF311_DATASET_ID}.json`;
 
 export interface FetchCasesOptions {
   /** Only cases requested within the last N days. */
@@ -16,49 +17,58 @@ export interface FetchCasesOptions {
   onPage?: (fetched: number) => void;
 }
 
+async function fetchPage(params: URLSearchParams, token?: string): Promise<SodaRow[]> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`${SODA_BASE}?${params}`, { headers: token ? { "X-App-Token": token } : {} });
+    if (res.ok) return (await res.json()) as SodaRow[];
+    if (attempt >= 4) throw new Error(`SODA request failed: ${res.status} ${await res.text()}`);
+    await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+  }
+}
+
 /**
- * Pull 311 cases from SF Open Data (Socrata SODA 2.1 API).
+ * Pull 311 cases from SF Open Data (Socrata SODA 2.1 API), newest first.
+ * Uses keyset pagination on (requested_datetime, service_request_id) instead of
+ * a growing $offset, so deep pages stay fast.
  * Docs: https://dev.socrata.com/foundry/data.sfgov.org/vw6y-z8j6
  */
 export async function* iterateSodaCases(
   opts: FetchCasesOptions = {},
 ): AsyncGenerator<SF311Case[], void, void> {
-  const { days = 30, limit = 5000, pageSize = 1000, center } = opts;
+  const { days = 30, limit = 5000, pageSize = 5000, center } = opts;
   const { SF_OPEN_DATA_APP_TOKEN } = getEnv();
 
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .replace(/\.\d{3}Z$/, "");
+  // SODA timestamps are SF wall-clock time, so compare against SF wall-clock too.
+  const since = sfWallClock(new Date(Date.now() - days * 86_400_000));
 
-  const where: string[] = [`requested_datetime > '${since}'`, "lat IS NOT NULL"];
+  const base: string[] = [`requested_datetime > '${since}'`, "lat IS NOT NULL"];
   if (center) {
-    where.push(`within_circle(point, ${center.lat}, ${center.lon}, ${center.radiusM})`);
+    base.push(`within_circle(point, ${center.lat}, ${center.lon}, ${center.radiusM})`);
   }
 
-  let offset = 0;
   let fetched = 0;
+  let cursor: { ts: string; id: string } | null = null;
   while (fetched < limit) {
     const size = Math.min(pageSize, limit - fetched);
+    const where = [...base];
+    if (cursor) {
+      where.push(
+        `(requested_datetime < '${cursor.ts}' OR (requested_datetime = '${cursor.ts}' AND service_request_id < '${cursor.id}'))`,
+      );
+    }
     const params = new URLSearchParams({
       $where: where.join(" AND "),
-      $order: "requested_datetime DESC",
+      $order: "requested_datetime DESC, service_request_id DESC",
       $limit: String(size),
-      $offset: String(offset),
     });
-    const res = await fetch(`${SODA_BASE}?${params}`, {
-      headers: SF_OPEN_DATA_APP_TOKEN ? { "X-App-Token": SF_OPEN_DATA_APP_TOKEN } : {},
-    });
-    if (!res.ok) {
-      throw new Error(`SODA request failed: ${res.status} ${await res.text()}`);
-    }
-    const rows = (await res.json()) as SodaRow[];
+    const rows = await fetchPage(params, SF_OPEN_DATA_APP_TOKEN);
     if (rows.length === 0) break;
 
-    const cases = rows.map(normalizeSodaRow).filter((c): c is SF311Case => c !== null);
+    const last = rows[rows.length - 1];
+    cursor = { ts: last.requested_datetime ?? "", id: last.service_request_id };
     fetched += rows.length;
-    offset += rows.length;
     opts.onPage?.(fetched);
-    yield cases;
+    yield rows.map(normalizeSodaRow).filter((c): c is SF311Case => c !== null);
 
     if (rows.length < size) break;
   }

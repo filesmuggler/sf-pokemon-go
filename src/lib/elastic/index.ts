@@ -1,5 +1,7 @@
 import type { IndicesIndexSettings, MappingTypeMapping } from "@elastic/elasticsearch/lib/api/types";
+import type { Client } from "@elastic/elasticsearch";
 import { getElasticClient, getIndexName } from "./client";
+import { getEnv } from "@/lib/env";
 import type { SF311Case } from "@/lib/sf311/types";
 
 export const CASE_MAPPINGS: MappingTypeMapping = {
@@ -36,6 +38,29 @@ export const CASE_SETTINGS: IndicesIndexSettings = {
   number_of_replicas: 0,
 };
 
+/** Elastic Serverless rejects shard/replica settings, so only send them to self-managed clusters. */
+export async function indexSettings(es: Client): Promise<IndicesIndexSettings | undefined> {
+  const info = await es.info();
+  return info.version.build_flavor === "serverless" ? undefined : CASE_SETTINGS;
+}
+
+/**
+ * With ELASTICSEARCH_INFERENCE_ID set (e.g. ".elser-2-elastic"), `description` is also
+ * copied into a `semantic_text` field so searches can match by meaning, not just keywords.
+ */
+export function caseMappings(): MappingTypeMapping {
+  const inferenceId = getEnv().ELASTICSEARCH_INFERENCE_ID;
+  if (!inferenceId) return CASE_MAPPINGS;
+  return {
+    ...CASE_MAPPINGS,
+    properties: {
+      ...CASE_MAPPINGS.properties,
+      description: { type: "text", analyzer: "english", copy_to: "description_semantic" },
+      description_semantic: { type: "semantic_text", inference_id: inferenceId },
+    },
+  };
+}
+
 export async function ensureIndex(opts: { recreate?: boolean } = {}): Promise<void> {
   const es = getElasticClient();
   const index = getIndexName();
@@ -45,7 +70,7 @@ export async function ensureIndex(opts: { recreate?: boolean } = {}): Promise<vo
     await es.indices.delete({ index });
   }
   if (!exists || opts.recreate) {
-    await es.indices.create({ index, settings: CASE_SETTINGS, mappings: CASE_MAPPINGS });
+    await es.indices.create({ index, settings: await indexSettings(es), mappings: caseMappings() });
   }
 }
 

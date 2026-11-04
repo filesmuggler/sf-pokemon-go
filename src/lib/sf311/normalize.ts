@@ -1,9 +1,34 @@
 import type { SF311Case, SodaRow } from "./types";
 
+const SF_TZ = "America/Los_Angeles";
+
+/** Minutes SF is offset from UTC at a given instant (e.g. -420 in summer). */
+function sfOffsetMinutes(at: Date): number {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: SF_TZ, timeZoneName: "longOffset" })
+    .formatToParts(at)
+    .find((p) => p.type === "timeZoneName")?.value;
+  const m = name?.match(/GMT([+-])(\d{2}):(\d{2})/);
+  return m ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+}
+
+/** A Date as SF wall-clock "YYYY-MM-DDTHH:mm:ss" (the format SODA compares against). */
+export function sfWallClock(d: Date): string {
+  return d.toLocaleString("sv-SE", { timeZone: SF_TZ }).replace(" ", "T");
+}
+
+/**
+ * SODA timestamps are "floating" (no zone) and mean SF local time. `new Date(value)`
+ * would read them in the server's zone, which is wrong on UTC hosts like Vercel.
+ */
 function toIso(value?: string): string | undefined {
   if (!value) return undefined;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(value)) {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+  const asUtc = new Date(`${value}Z`);
+  if (Number.isNaN(asUtc.getTime())) return undefined;
+  return new Date(asUtc.getTime() - sfOffsetMinutes(asUtc) * 60_000).toISOString();
 }
 
 export function normalizeSodaRow(row: SodaRow): SF311Case | null {

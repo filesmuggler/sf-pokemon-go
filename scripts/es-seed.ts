@@ -43,7 +43,7 @@ async function main() {
       : undefined;
 
   console.log(
-    `Fetching 311 cases from data.sfgov.org — last ${values.days} days, limit ${values.limit}${
+    `Fetching 311 cases from data.sf.gov — last ${values.days} days, limit ${values.limit}${
       center ? `, within ${center.radiusM} m of ${center.lat},${center.lon}` : ""
     }`,
   );

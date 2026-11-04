@@ -13,6 +13,8 @@ const envSchema = z.object({
   ELASTICSEARCH_USERNAME: z.string().optional(),
   ELASTICSEARCH_PASSWORD: z.string().optional(),
   ELASTICSEARCH_INDEX: z.string().default("sf311-cases"),
+  /** Optional inference endpoint (e.g. ".elser-2-elastic") for semantic search over case descriptions. */
+  ELASTICSEARCH_INFERENCE_ID: z.string().optional(),
   /** Closed-loop challenge data lives in its own indices, separate from the 311 mirror. */
   ELASTICSEARCH_CHALLENGES_INDEX: z.string().default("sf-challenges"),
   ELASTICSEARCH_OBSERVATIONS_INDEX: z.string().default("sf-observations"),

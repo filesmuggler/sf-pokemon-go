@@ -147,6 +147,8 @@ export const ChallengeRequestSchema = z.object({
   radius_m: z.number().min(100).max(3000).default(1200),
   days: z.number().int().min(1).max(365).default(90),
   neighborhood_hint: z.string().optional(),
+  /** "rules": instant challenges from 311 data, no LLM. "agent": Mistral reads trends + OSM and designs them. */
+  mode: z.enum(["rules", "agent"]).default("rules"),
 });
 export type ChallengeRequest = z.infer<typeof ChallengeRequestSchema>;
 
